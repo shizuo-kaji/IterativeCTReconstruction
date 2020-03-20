@@ -7,7 +7,7 @@ import functools
 import chainer.links as L
 
 optim = {
-    'SGD': optimizers.MomentumSGD,
+    'SGD': optimizers.SGD,
     'Momentum': optimizers.MomentumSGD,
     'AdaDelta': optimizers.AdaDelta,
     'AdaGrad': optimizers.AdaGrad,

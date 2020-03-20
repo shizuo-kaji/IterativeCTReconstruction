@@ -8,7 +8,7 @@ from datetime import datetime as dt
 
 def arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', '-b', type=int, default=1)
+    parser.add_argument('--batchsize', '-b', type=int, default=1)
     parser.add_argument('--gpu', '-g', type=int, default=0,
                         help='GPU IDs (currently, only single-GPU usage is supported')
     parser.add_argument('--out', '-o', default='result',
@@ -16,7 +16,7 @@ def arguments():
     parser.add_argument('--root', '-R', default='data',help='Root directory for data')
     parser.add_argument('--planct_dir', '-Rp', default='',help='dir containing planCT images for discriminator')
     parser.add_argument('--mvct_dir', '-Rm', default='',help='dir containing reconstructed MVCT images for discriminator')
-    parser.add_argument('--sinogram', '-s', default='', help='directory containing sinograms')
+    parser.add_argument('--sinogram', '-Rs', default='', help='directory containing sinograms')
     parser.add_argument('--argfile', '-a', help="specify args file to load settings from")
     parser.add_argument('--projection_matrix', '-pm', default='projection_matrix_2d_256_1074mm.npz',
                         #default='projection_matrix_2d_512_1074mm.npz',
@@ -27,7 +27,7 @@ def arguments():
 
     parser.add_argument('--snapinterval', '-si', type=int, default=-1, 
                         help='take snapshot every this reconstruction')
-    parser.add_argument('--weight_decay', '-wd', type=float, default=0,
+    parser.add_argument('--weight_decay', '-wd', type=float, default=0,  #1e-7,
                         help='weight decay for regularization')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam_d',
                         help='select optimizer')
@@ -77,7 +77,7 @@ def arguments():
     parser.add_argument('--dis_attention', action='store_true',help='attention mechanism for discriminator')
 
     # generator: G: A -> B, F: B -> A
-    parser.add_argument('--gen_activation', '-ga', default='relu', choices=activation_func.keys())
+    parser.add_argument('--gen_activation', '-ga', default='lrelu', choices=activation_func.keys())
     parser.add_argument('--gen_out_activation', '-go', default='tanh', choices=activation_func.keys())
     parser.add_argument('--gen_fc_activation', '-gfca', default='relu', choices=activation_func.keys())
     parser.add_argument('--gen_chs', '-gc', type=int, nargs="*", default=None,
@@ -90,7 +90,7 @@ def arguments():
                         help='number of fc layers before convolutional layers')
     parser.add_argument('--gen_nblock', '-gnb', type=int, default=4,
                         help='number of residual blocks in generators')
-    parser.add_argument('--gen_ksize', '-gk', type=int, default=3,    # 4 in the original paper
+    parser.add_argument('--gen_ksize', '-gk', type=int, default=3,
                         help='kernel size for generator')
     parser.add_argument('--gen_sample', '-gs', default='none-7',
                         help='first and last conv layers for generator')
@@ -120,7 +120,7 @@ def arguments():
                         help='number of reconstructions')
     parser.add_argument('--iter', '-i', default=20000, type=int,
                         help='number of iterations for each reconstruction') 
-    parser.add_argument('--vis_freq', '-vf', default=2000, type=int,
+    parser.add_argument('--vis_freq', '-vf', default=1000, type=int,
                         help='image output interval')
 
     parser.add_argument('--max_reconst_freq', '-mf', default=1, type=int,   # 40
@@ -130,7 +130,7 @@ def arguments():
     parser.add_argument('--dis_freq', '-df', default=-1, type=int,
                         help='discriminator update interval; set to negative to turn of discriminator')
 
-    parser.add_argument('--lr_sd', '-lrs', default=1e-2, type=float,   # 1e-2 for exp, 0.5 for log, 1e-1 for conjugate
+    parser.add_argument('--lr_sd', '-lrs', default=2e-4, type=float,   # 1e-2 for exp, 0.5 for log, 1e-1 for conjugate
                         help='learning rate for seed array')
     parser.add_argument('--lr_gen', '-lrg', default=2e-4, type=float, # 1e-2
                         help='learning rate for generator NN')
@@ -173,14 +173,16 @@ def arguments():
     parser.add_argument('--scale_to', '-sc', type=int, default=-1)
 
     ## dicom related
-    parser.add_argument('--HU_base', '-hub', type=int, default=-4500,     # -4500, 
+    parser.add_argument('--HU_base', '-hub', type=int, default=-6000,     # -4500, 
                         help='minimum HU value to be accounted for')
-    parser.add_argument('--HU_range', '-hur', type=int, default=6000, # 6000,
+    parser.add_argument('--HU_range', '-hur', type=int, default=9000,    # 6000,
                         help='the maximum HU value to be accounted for will be HU_base+HU_range') #700
     parser.add_argument('--HU_range_vis', '-hurv', default=2000, type=int,
                         help='HU range in the visualization')
 
     args = parser.parse_args()
+
+    # set defaults
     if not args.gen_chs:
         args.gen_chs = [int(args.gen_basech) * (2**i) for i in range(args.gen_ndown)]
     if not args.dis_chs:
@@ -195,6 +197,10 @@ def arguments():
         args.crop_height = args.crop_width
     if args.latent_dim>0:
         args.decoder_only = True
+    if args.iter < args.vis_freq:
+        args.vis_freq = args.iter
+    if args.lambda_sd>0 and args.lr_sd < 0.05:
+        print("\n\n for usual iterative reconstruction (-ls), --lr_sd should be around 0.1. \n\n")
     args.ch = 1
     args.out_ch = 1
     dtime = dt.now().strftime('%m%d_%H%M')

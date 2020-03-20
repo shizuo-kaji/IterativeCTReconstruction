@@ -1,7 +1,7 @@
 import random
 import chainer
 import chainer.functions as F
-from chainer import Variable,cuda
+from chainer import Variable,cuda,initializers
 import losses
 import numpy as np
 from chainercv.utils import read_image,write_image
@@ -30,16 +30,13 @@ class Updater(chainer.training.StandardUpdater):
         if step == 0:
             batch = self.get_iterator('main').next()
             self.prImg, self.rev, self.patient_id, self.slice = self.converter(batch, self.device)
-            self.prImg, self.rev, self.patient_id, self.slice = self.prImg[0], self.rev[0], self.patient_id[0], self.slice[0]
             self.n_reconst += 1
             self.recon_freq = 1
             if "npy" in self.args.model_image:
                 self.seed.W.array = xp.reshape(xp.load(self.args.model_image),(1,1,self.args.crop_height,self.args.crop_width))
-            elif self.args.decoder_only:
-                self.seed.W.array = xp.random.uniform(-1,1,(1,self.args.latent_dim)).astype(np.float32)
             else:
-                self.seed.W.array = xp.random.uniform(-1,1,(1,1,self.args.crop_height,self.args.crop_width)).astype(np.float32)
-                #self.seed.W.array = xp.reshape(xp.zeros_like(self.seed.W.array),(1,1,self.args.crop_height,self.args.crop_width))
+#                initializers.Uniform(scale=1)(self.seed.W.array)
+                initializers.HeNormal()(self.seed.W.array)
 
         ## for seed array
         arr = self.seed()
@@ -50,17 +47,20 @@ class Updater(chainer.training.StandardUpdater):
         loss_seed = Variable(xp.array([0.0],dtype=np.float32))
         # conjugate correction using system matrix
         if self.args.lambda_sd > 0:
-            if self.rev:
-                rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[:,:,::-1,::-1],(-1,1))))
-            else:
-                rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw,(-1,1))))
-            loss_sd = F.mean_squared_error(rec_sd,self.prImg)
-            chainer.report({'loss_sd': loss_sd}, self.seed)
-            gd = F.sparse_matmul( rec_sd-self.prImg, self.conjMat, transa=True )
-            if self.rev:
-                self.seed.W.grad = -self.args.lambda_sd * F.reshape(gd, (1,1,self.args.crop_height,self.args.crop_width) ).array[:,:,::-1,::-1]    # / logrep.shape[0] ?
-            else:
-                self.seed.W.grad = -self.args.lambda_sd * F.reshape(gd, (1,1,self.args.crop_height,self.args.crop_width) ).array    # / logrep.shape[0] ?
+            self.seed.W.grad = xp.zeros_like(self.seed.W.array)
+            loss_sd = 0
+            for i in range(len(self.prImg)):
+                if self.rev[i]:
+                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i,:,::-1,::-1],(-1,1))))
+                else:
+                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i],(-1,1))))
+                loss_sd += F.mean_squared_error(rec_sd,self.prImg[i])
+                gd = F.sparse_matmul( rec_sd-self.prImg[i], self.conjMat, transa=True )
+                if self.rev[i]:
+                    self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]    # / logrep.shape[0] ?
+                else:
+                    self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array    # / logrep.shape[0] ?
+            chainer.report({'loss_sd': loss_sd/len(self.prImg)}, self.seed)
 
         if self.args.lambda_tvs > 0:
             loss_tvs = losses.total_variation(arr, tau=self.args.tv_tau, method=self.args.tv_method)
@@ -115,9 +115,9 @@ class Updater(chainer.training.StandardUpdater):
         loss_gen.backward()
         loss_seed.backward()
         chainer.report({'loss_gen': loss_gen}, self.seed)
-        optimizer_enc.update(loss=loss_gen)
-        optimizer_dec.update(loss=loss_gen)
-        optimizer_sd.update(loss=loss_seed)
+        optimizer_enc.update()
+        optimizer_dec.update()
+        optimizer_sd.update()
 
         chainer.report({'grad_sd': F.average(F.absolute(self.seed.W.grad))}, self.seed)
         if self.args.latent_dim>0:
@@ -128,32 +128,39 @@ class Updater(chainer.training.StandardUpdater):
             self.encoder.cleargrads()
             self.decoder.cleargrads()
             self.seed.cleargrads()
+            gen.grad = xp.zeros_like(gen.array)
+
             HU_nn = ((gen+1)/2 * self.args.HU_range)+self.args.HU_base  # [-1000=air,0=water,>1000=bone]
             raw_nn = HU_nn * 0.0716 / 1024 + 0.0716
-            if self.rev:
-                rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn[:,:,::-1,::-1],(-1,1))))
-            else:
-                rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn,(-1,1))))
-            loss_nn = F.mean_squared_error(rec_nn,self.prImg)
-            chainer.report({'loss_nn': loss_nn}, self.seed)
-
-            gd_nn = F.sparse_matmul( rec_nn-self.prImg, self.conjMat, transa=True )
-            if self.rev:
-                gen.grad = -self.args.lambda_nn * F.reshape(gd_nn, (1,1,self.args.crop_height,self.args.crop_width) ).array[:,:,::-1,::-1]
-            else:
-                gen.grad = -self.args.lambda_nn * F.reshape(gd_nn, (1,1,self.args.crop_height,self.args.crop_width) ).array
+            loss_nn = 0
+            for i in range(len(self.prImg)):
+                if self.rev[i]:
+                    rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn[i,:,::-1,::-1],(-1,1))))
+                else:
+                    rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn[i],(-1,1))))
+                loss_nn += F.mean_squared_error(rec_nn,self.prImg[i])
+                gd_nn = F.sparse_matmul( rec_nn-self.prImg[i], self.conjMat, transa=True )
+                if self.rev[i]:
+                    gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]
+                else:
+                    gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array
+            chainer.report({'loss_nn': loss_nn/len(self.prImg)}, self.seed)
             gen.backward()
+#            loss_nn.backward()
 
             if not self.args.no_train_seed:
-                optimizer_sd.update(loss=loss_nn)
+                optimizer_sd.update()
             if not self.args.no_train_enc:
-                optimizer_enc.update(loss=loss_nn)
+                optimizer_enc.update()
             if not self.args.no_train_dec:
-                optimizer_dec.update(loss=loss_nn)
+                optimizer_dec.update()
 
-            chainer.report({'grad_sd_consistency': F.average(F.absolute(self.seed.W.grad))}, self.seed)
+            if self.seed.W.grad is not None:
+                chainer.report({'grad_sd_consistency': F.average(F.absolute(self.seed.W.grad))}, self.seed)
             if self.args.latent_dim>0:
                 chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.latent_fc.l0.W.grad))}, self.seed)
+            else:
+                chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.ul.c1.c.W.grad))}, self.seed)
 
         # clip seed to [-1,1]
         if self.args.clip:
@@ -199,29 +206,31 @@ class Updater(chainer.training.StandardUpdater):
             chainer.report({'loss_dis': (L_real+L_fake)/2}, self.seed)
 
 
-        if (self.iteration+1) % self.args.vis_freq == 0:
-            outlist=[]
-            if not self.args.no_train_seed and not self.args.decoder_only:
-                outlist.append((self.seed()[0],"0sd"))
-            if plan_ae is not None:
-                outlist.append((plan[0],'2pl'))
-                outlist.append((plan_ae[0],'3ae'))
-            if self.args.lambda_nn>0 or self.args.lambda_adv>0:
-                if self.args.decoder_only:
-                    gen_img = self.decoder([self.seed()])[0]
-                else:
-                    gen_img = self.decoder(self.encoder(self.seed()))[0]
-                outlist.append((gen_img,'1gn'))
-            if fake is not None:
-                outlist.append((fake[0],'4fa'))
-            for out,typ in outlist:
-                out.to_cpu()
-                HU = (((out+1)/2 * self.args.HU_range)+self.args.HU_base).array  # [-1000=air,0=water,>1000=bone]
-                print("type: ",typ,"HU:",np.min(HU),np.mean(HU),np.max(HU))
-                #visimg = np.clip((out.array+1)/2,0,1) * 255.0
-                b,r = -self.args.HU_range_vis//2,self.args.HU_range_vis
-                visimg = (np.clip(HU,b,b+r)-b)/r * 255.0
-                write_image(np.uint8(visimg),os.path.join(self.args.out,'n{:0>5}_iter{:0>6}_p{}_z{}_{}.jpg'.format(self.n_reconst,step+1,self.patient_id,self.slice,typ)))
-                if (step+1)==self.args.iter:
-                    np.save(os.path.join(self.args.out,'n{:0>5}_iter{:0>6}_p{}_z{}_{}.npy'.format(self.n_reconst,step+1,self.patient_id,self.slice,typ)),HU[0])
-                    write_dicom(os.path.join(self.args.out,'n{:0>5}_iter{:0>6}_p{}_z{}_{}.dcm'.format(self.n_reconst,step+1,self.patient_id,self.slice,typ)),HU[0])
+        if ((self.iteration+1) % self.args.vis_freq == 0) or  ((step+1)==self.args.iter):
+            for i in range(self.args.batchsize):
+                outlist=[]
+                if not self.args.no_train_seed and not self.args.decoder_only:
+                    outlist.append((self.seed()[i],"0sd"))
+                if plan_ae is not None:
+                    outlist.append((plan[i],'2pl'))
+                    outlist.append((plan_ae[i],'3ae'))
+                if self.args.lambda_nn>0 or self.args.lambda_adv>0:
+                    if self.args.decoder_only:
+                        gen_img = self.decoder([self.seed()])
+                    else:
+                        gen_img = self.decoder(self.encoder(self.seed()))
+                    outlist.append((gen_img[i],'1gn'))
+                if fake is not None:
+                    outlist.append((fake[i],'4fa'))
+                for out,typ in outlist:
+                    out.to_cpu()
+                    HU = (((out+1)/2 * self.args.HU_range)+self.args.HU_base).array  # [-1000=air,0=water,>1000=bone]
+                    print("type: ",typ,"HU:",np.min(HU),np.mean(HU),np.max(HU))
+                    #visimg = np.clip((out.array+1)/2,0,1) * 255.0
+                    b,r = -self.args.HU_range_vis//2,self.args.HU_range_vis
+                    visimg = (np.clip(HU,b,b+r)-b)/r * 255.0
+                    fn = 'n{:0>5}_iter{:0>6}_p{}_z{}_{}'.format(self.n_reconst,step+1,self.patient_id[i],self.slice[i],typ)
+                    write_image(np.uint8(visimg),os.path.join(self.args.out,fn+'.jpg'))
+                    if (step+1)==self.args.iter:
+                        #np.save(os.path.join(self.args.out,fn+'.npy'),HU[0])
+                        write_dicom(os.path.join(self.args.out,fn+'.dcm'),HU[0])

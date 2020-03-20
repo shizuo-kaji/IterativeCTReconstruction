@@ -321,10 +321,6 @@ class Decoder(chainer.Chain):
             up_chs = [self.chs[i]+args.skipdim for i in range(len(self.chs))]
         else:    # ['add','none']:
             up_chs = self.chs
-        if hasattr(args,'noise_z'):
-            self.noise_z = args.noise_z
-        else:
-            self.noise_z = 0
         with self.init_scope():
             if hasattr(args,'latent_dim') and args.latent_dim>0:
                 self.latent_c = args.gen_chs[-1]
@@ -344,8 +340,6 @@ class Decoder(chainer.Chain):
             e = h[-1]
         else:
             e = h
-        if chainer.config.train and self.noise_z>0:
-            e.data += self.noise_z * e.xp.random.randn(*e.data.shape, dtype=e.dtype)
         if hasattr(self,'latent_fc'):
             e = F.reshape(self.latent_fc(e),(-1,self.latent_c,self.latent_h,self.latent_w))
         for i in range(self.n_resblock):
@@ -363,11 +357,18 @@ class Decoder(chainer.Chain):
 class Generator(chainer.Chain):
     def __init__(self, args):
         super(Generator, self).__init__()
+        if hasattr(args,'noise_z'):
+            self.noise_z = args.noise_z
+        else:
+            self.noise_z = 0
         with self.init_scope():
             self.encoder = Encoder(args)
             self.decoder = Decoder(args)
     def __call__(self, x):
-        return self.decoder(self.encoder(x))
+        h = self.encoder(x)
+        if chainer.config.train and self.noise_z>0:
+            h.data += self.noise_z * h.xp.random.randn(*h.data.shape, dtype=h.dtype)
+        return self.decoder(h)
 
 class Discriminator(chainer.Chain):
     def __init__(self, args):

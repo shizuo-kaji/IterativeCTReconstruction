@@ -10,7 +10,7 @@ import sys
 
 import numpy as np
 from PIL import Image, ImageFilter
-import random
+import random,math
 import scipy
 import cupyx
 
@@ -21,6 +21,7 @@ from chainer import cuda, Variable, optimizers, serializers, training
 from chainer.training import extensions
 from chainercv.utils import read_image,write_image
 from chainerui.utils import save_args
+from chainerui.extensions import CommandsExtension
 
 import cupy as cp
 import cupyx
@@ -83,8 +84,16 @@ def main():
             print('encoder model loaded: {}'.format(args.model_gen))
         serializers.load_npz(args.model_gen.replace('enc','dec'), decoder) 
         print('decoder model loaded: {}'.format(args.model_gen.replace('enc','dec')))
-#    init = xp.zeros((1,1,args.crop_height,args.crop_width)).astype(np.float32)
-    init = xp.random.uniform(-0.1,0.1,(1,1,args.crop_height,args.crop_width)).astype(np.float32)
+    if args.latent_dim>0:
+        init = xp.zeros((args.batchsize,args.latent_dim)).astype(np.float32)
+    elif args.decoder_only:
+        c = args.gen_chs[-1]
+        h = args.crop_height//(2**(len(args.gen_chs)-1))
+        w = args.crop_width//(2**(len(args.gen_chs)-1))
+        init = xp.zeros((args.batchsize,c,h,w)).astype(np.float32)
+    else:
+        init = xp.zeros((args.batchsize,1,args.crop_height,args.crop_width)).astype(np.float32)
+#    init = xp.random.uniform(-0.1,0.1,(1,1,args.crop_height,args.crop_width)).astype(np.float32)
     print("Initial image {} shape {}".format(args.model_image,init.shape))
     seed = L.Parameter(init)
 
@@ -100,21 +109,19 @@ def main():
         optimizer = optim[opttype](lr)
         #from profiled_optimizer import create_marked_profile_optimizer
 #        optimizer = create_marked_profile_optimizer(optim[opttype](lr), sync=True, sync_level=2)
+        optimizer.setup(model)
         if args.weight_decay>0:
             if opttype in ['Adam','Adam_d','AdaBound','Eve']:
                 optimizer.weight_decay_rate = args.weight_decay
             else:
-                if args.weight_decay_norm =='l2':
-                    optimizer.add_hook(chainer.optimizer.WeightDecay(args.weight_decay))
-                else:
-                    optimizer.add_hook(chainer.optimizer_hooks.Lasso(args.weight_decay))
-        optimizer.setup(model)
+                optimizer.add_hook(chainer.optimizer_hooks.WeightDecay(args.weight_decay))
+#        optimizer.add_hook(chainer.optimizer_hooks.GradientClipping(100))
         return optimizer
 
     optimizer_sd = make_optimizer(seed, args.lr_sd, args.optimizer)
     optimizer_enc = make_optimizer(encoder, args.lr_gen, args.optimizer)
     optimizer_dec = make_optimizer(decoder, args.lr_gen, args.optimizer)
-    optimizer_dis = make_optimizer(dis, args.lr_dis, args.optimizer)
+    optimizer_dis = make_optimizer(dis, args.lr_dis, args.optimizer_dis)
 
     # load projection matrix and sinogram
     if args.crop_height>256:
@@ -139,13 +146,13 @@ def main():
     planct_dataset = Dataset(
         path=args.planct_dir, baseA=args.HU_base, rangeA=args.HU_range, crop=(args.crop_height,args.crop_width),
         scale_to=args.scale_to, random=args.random_translate) 
-    planct_iter = chainer.iterators.SerialIterator(planct_dataset, 1, shuffle=True)
+    planct_iter = chainer.iterators.SerialIterator(planct_dataset, args.batchsize, shuffle=True)
     mvct_dataset = Dataset(
         path=args.mvct_dir, baseA=args.HU_base, rangeA=args.HU_range, crop=(args.crop_height,args.crop_width),
         scale_to=args.scale_to, random=args.random_translate, imgtype='npy') 
-    mvct_iter = chainer.iterators.SerialIterator(mvct_dataset, 1, shuffle=True)
+    mvct_iter = chainer.iterators.SerialIterator(mvct_dataset, args.batchsize, shuffle=True)
     data = prjData(args.sinogram)
-    proj_iter = chainer.iterators.SerialIterator(data, 1, shuffle=False) # True
+    proj_iter = chainer.iterators.SerialIterator(data, args.batchsize, shuffle=False) # True
 
     updater = Updater(
         models=(seed,encoder,decoder,dis),
@@ -157,7 +164,7 @@ def main():
 
     # logging
     if args.epoch < 0:
-        total_iter = -args.epoch*len(data)*args.iter
+        total_iter = -args.epoch*args.iter * math.ceil(len(data)/args.batchsize)
     else:
         total_iter = args.epoch*args.iter
     trainer = training.Trainer(updater, (total_iter, 'iteration'), out=args.out)
@@ -186,6 +193,9 @@ def main():
                 log_keys_dis, 'iteration',trigger=(100, 'iteration'), file_name='loss_dis.png'))
         trainer.extend(extensions.PlotReport(
                 log_keys_grad, 'iteration',trigger=(100, 'iteration'), file_name='loss_grad.png', postprocess=plot_log))
+
+#    trainer.extend(extensions.ParameterStatistics([seed,decoder]))   ## very slow
+    trainer.extend(CommandsExtension())
 
     if args.snapinterval <= 0:
         args.snapinterval = total_iter
