@@ -7,6 +7,7 @@ import numpy as np
 from chainercv.utils import read_image,write_image
 import os
 from dataset import write_dicom
+import pydicom as dicom
 
 class Updater(chainer.training.StandardUpdater):
     def __init__(self, *args, **kwargs):
@@ -32,11 +33,18 @@ class Updater(chainer.training.StandardUpdater):
             self.prImg, self.rev, self.patient_id, self.slice = self.converter(batch, self.device)
             self.n_reconst += 1
             self.recon_freq = 1
-            if "npy" in self.args.model_image:
+            if ".npy" in self.args.model_image:
                 self.seed.W.array = xp.reshape(xp.load(self.args.model_image),(1,1,self.args.crop_height,self.args.crop_width))
+            elif ".dcm" in self.args.model_image:
+                ref_dicom = dicom.read_file(self.args.model_image, force=True)
+                img = xp.array(ref_dicom.pixel_array+ref_dicom.RescaleIntercept)
+                img = (2*(xp.clip(img,self.args.HU_base,self.args.HU_base+self.args.HU_range)-self.args.HU_base)/self.args.HU_range-1.0).astype(np.float32)
+                self.seed.W.array = xp.reshape(img,(1,1,self.args.crop_height,self.args.crop_width))
             else:
-#                initializers.Uniform(scale=1)(self.seed.W.array)
+#                initializers.Uniform()(self.seed.W.array)
                 initializers.HeNormal()(self.seed.W.array)
+            self.initial_seed = self.seed.W.array.copy()
+            print(xp.min(self.initial_seed),xp.max(self.initial_seed),xp.mean(self.initial_seed))
 
         ## for seed array
         arr = self.seed()
@@ -120,8 +128,8 @@ class Updater(chainer.training.StandardUpdater):
         optimizer_sd.update()
 
         chainer.report({'grad_sd': F.average(F.absolute(self.seed.W.grad))}, self.seed)
-        if self.args.latent_dim>0:
-            chainer.report({'grad_gen': F.average(F.absolute(self.decoder.latent_fc.l0.W.grad))}, self.seed)
+        if hasattr(self.decoder, 'latent_fc'):
+            chainer.report({'grad_gen': F.average(F.absolute(self.decoder.latent_fc.W.grad))}, self.seed)
 
         # reconstruction consistency for NN
         if (step % self.recon_freq == 0) and self.args.lambda_nn>0:
@@ -157,10 +165,11 @@ class Updater(chainer.training.StandardUpdater):
 
             if self.seed.W.grad is not None:
                 chainer.report({'grad_sd_consistency': F.average(F.absolute(self.seed.W.grad))}, self.seed)
-            if self.args.latent_dim>0:
-                chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.latent_fc.l0.W.grad))}, self.seed)
-            else:
+            if hasattr(self.decoder, 'latent_fc'):
+                chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.latent_fc.W.grad))}, self.seed)
+            elif hasattr(self.decoder, 'ul'):
                 chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.ul.c1.c.W.grad))}, self.seed)
+            chainer.report({'seed_diff': F.mean_absolute_error(self.initial_seed,self.seed.W)/F.mean_absolute_error(self.initial_seed,xp.zeros_like(self.initial_seed))}, self.seed)
 
         # clip seed to [-1,1]
         if self.args.clip:
@@ -171,7 +180,7 @@ class Updater(chainer.training.StandardUpdater):
 
         ## for discriminator
         fake = None
-        if self.args.dis_freq > 0 and ( (step+1) % self.args.dis_freq == 0):
+        if self.args.dis_freq > 0 and ( (step+1) % self.args.dis_freq == 0) and (self.args.lambda_gan+self.args.lambda_adv+self.args.lambda_advs>0):
             # get mini-batch
             if plan is None:
                 plan = self.converter(self.get_iterator('planct').next(), self.device)
@@ -231,6 +240,6 @@ class Updater(chainer.training.StandardUpdater):
                     visimg = (np.clip(HU,b,b+r)-b)/r * 255.0
                     fn = 'n{:0>5}_iter{:0>6}_p{}_z{}_{}'.format(self.n_reconst,step+1,self.patient_id[i],self.slice[i],typ)
                     write_image(np.uint8(visimg),os.path.join(self.args.out,fn+'.jpg'))
-                    if (step+1)==self.args.iter:
+                    if (step+1)==self.args.iter or self.args.save_dcm:
                         #np.save(os.path.join(self.args.out,fn+'.npy'),HU[0])
                         write_dicom(os.path.join(self.args.out,fn+'.dcm'),HU[0])

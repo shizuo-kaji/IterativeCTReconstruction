@@ -2,12 +2,12 @@ import argparse
 import numpy as np
 import chainer.functions as F
 from consts import activation_func,dtypes,uplayer,downlayer,norm_layer,unettype,optim
-import os
+import os,sys
 from datetime import datetime as dt
-
 
 def arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--dp', action='store_true')
     parser.add_argument('--batchsize', '-b', type=int, default=1)
     parser.add_argument('--gpu', '-g', type=int, default=0,
                         help='GPU IDs (currently, only single-GPU usage is supported')
@@ -69,7 +69,7 @@ def arguments():
                         help='jitter for discriminator label for LSGAN')
     parser.add_argument('--dis_dropout', '-ddo', type=float, default=None, 
                         help='dropout ratio for discriminator')
-    parser.add_argument('--dis_norm', '-dn', default='instance',
+    parser.add_argument('--dis_norm', '-dn', default='group',
                         choices=norm_layer)
     parser.add_argument('--dis_reg_weighting', '-dw', type=float, default=0,
                         help='regularisation of weighted discriminator. Set 0 to disable weighting')
@@ -77,7 +77,7 @@ def arguments():
     parser.add_argument('--dis_attention', action='store_true',help='attention mechanism for discriminator')
 
     # generator: G: A -> B, F: B -> A
-    parser.add_argument('--gen_activation', '-ga', default='lrelu', choices=activation_func.keys())
+    parser.add_argument('--gen_activation', '-ga', default='relu', choices=activation_func.keys())
     parser.add_argument('--gen_out_activation', '-go', default='tanh', choices=activation_func.keys())
     parser.add_argument('--gen_fc_activation', '-gfca', default='relu', choices=activation_func.keys())
     parser.add_argument('--gen_chs', '-gc', type=int, nargs="*", default=None,
@@ -92,15 +92,15 @@ def arguments():
                         help='number of residual blocks in generators')
     parser.add_argument('--gen_ksize', '-gk', type=int, default=3,
                         help='kernel size for generator')
-    parser.add_argument('--gen_sample', '-gs', default='none-7',
+    parser.add_argument('--gen_sample', '-gs', default='none',
                         help='first and last conv layers for generator')
     parser.add_argument('--gen_down', '-gd', default='down',
                         help='down layers in generator')
-    parser.add_argument('--gen_up', '-gu', default='resize',
+    parser.add_argument('--gen_up', '-gu', default='deconv',
                         help='up layers in generator')
     parser.add_argument('--gen_dropout', '-gdo', type=float, default=None, 
                         help='dropout ratio for generator')
-    parser.add_argument('--gen_norm', '-gn', default='instance',
+    parser.add_argument('--gen_norm', '-gn', default='batch_aff',
                         choices=norm_layer)
     parser.add_argument('--unet', '-u', default='none', choices=unettype,
                         help='use u-net skip connections for generator')
@@ -120,19 +120,20 @@ def arguments():
                         help='number of reconstructions')
     parser.add_argument('--iter', '-i', default=20000, type=int,
                         help='number of iterations for each reconstruction') 
-    parser.add_argument('--vis_freq', '-vf', default=1000, type=int,
+    parser.add_argument('--vis_freq', '-vf', default=2000, type=int,
                         help='image output interval')
+    parser.add_argument('--save_dcm', '-dcm', action='store_true')
 
     parser.add_argument('--max_reconst_freq', '-mf', default=1, type=int,   # 40
                         help='consistency loss will be considered one in every this number in the end')
     parser.add_argument('--reconst_freq_decay_start', '-rfd', default=400, type=int,
                         help='reconst_freq starts to increase towards max_reconst_freq after this number of iterations')
-    parser.add_argument('--dis_freq', '-df', default=-1, type=int,
+    parser.add_argument('--dis_freq', '-df', default=1, type=int,
                         help='discriminator update interval; set to negative to turn of discriminator')
 
-    parser.add_argument('--lr_sd', '-lrs', default=2e-4, type=float,   # 1e-2 for exp, 0.5 for log, 1e-1 for conjugate
+    parser.add_argument('--lr_sd', '-lrs', default=1e-4, type=float,   # 1e-2 for exp, 0.5 for log, 1e-1 for conjugate
                         help='learning rate for seed array')
-    parser.add_argument('--lr_gen', '-lrg', default=2e-4, type=float, # 1e-2
+    parser.add_argument('--lr_gen', '-lrg', default=1e-4, type=float, # 1e-2
                         help='learning rate for generator NN')
     parser.add_argument('--lr_dis', '-lrd', default=1e-4, type=float,
                         help='learning rate for discriminator NN')
@@ -185,8 +186,10 @@ def arguments():
     # set defaults
     if not args.gen_chs:
         args.gen_chs = [int(args.gen_basech) * (2**i) for i in range(args.gen_ndown)]
+        args.gen_chs = [i if i < 512 else 512 for i in args.gen_chs]
     if not args.dis_chs:
         args.dis_chs = [int(args.dis_basech) * (2**i) for i in range(args.dis_ndown)]
+        args.dis_chs = [i if i < 512 else 512 for i in args.dis_chs]
     if not args.planct_dir:
         args.planct_dir = os.path.join(args.root,"planCT")
     if not args.mvct_dir:
@@ -195,15 +198,23 @@ def arguments():
         args.sinogram = os.path.join(args.root,"projection")
     if not args.crop_height:
         args.crop_height = args.crop_width
+    if args.crop_width != 256:
+        args.projection_matrix = args.projection_matrix.replace('256',str(args.crop_width))
+        args.system_matrix = args.system_matrix.replace('256',str(args.crop_width))
     if args.latent_dim>0:
         args.decoder_only = True
+    if args.decoder_only or args.unet=="none":
+        args.skipdim=0
     if args.iter < args.vis_freq:
         args.vis_freq = args.iter
     if args.lambda_sd>0 and args.lr_sd < 0.05:
         print("\n\n for usual iterative reconstruction (-ls), --lr_sd should be around 0.1. \n\n")
+    args.use_dis = (args.lambda_gan+args.lambda_adv+args.lambda_advs>0)
+    args.use_enc = (not args.decoder_only)
     args.ch = 1
     args.out_ch = 1
     dtime = dt.now().strftime('%m%d_%H%M')
     args.out = os.path.join(args.out, '{}_ln{}_lgan{}_ladv{}_df{},dim{}_mg{}_md{}'.format(dtime,args.lambda_nn,args.lambda_gan,args.lambda_adv,args.dis_freq,args.latent_dim,(args.model_gen is not None),(args.model_dis is not None)))
+
     return(args)
 

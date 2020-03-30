@@ -9,7 +9,6 @@ import os
 import sys
 
 import numpy as np
-from PIL import Image, ImageFilter
 import random,math
 import scipy
 import cupyx
@@ -19,20 +18,14 @@ import chainer.functions as F
 import chainer.links as L
 from chainer import cuda, Variable, optimizers, serializers, training
 from chainer.training import extensions
-from chainercv.utils import read_image,write_image
-from chainerui.utils import save_args
 from chainerui.extensions import CommandsExtension
+from chainerui.utils import save_args
 
 import cupy as cp
-import cupyx
 
-from instance_normalization import InstanceNormalization
 from dataset import Dataset,prjData 
-from lbfgs import LBFGS
 
 from net import Discriminator
-from net import Encoder,Decoder
-#from net_dp import Encoder,Decoder
 import losses
 from arguments import arguments
 from consts import dtypes,optim
@@ -51,8 +44,11 @@ def main():
     chainer.config.autotune = True
     chainer.print_runtime_info()
     print(args)
-    os.makedirs(args.out, exist_ok=True)
-    save_args(args,args.out)
+
+    if args.dp:
+        from net_dp import Encoder,Decoder
+    else:
+        from net import Encoder,Decoder
 
     if args.gpu >= 0:
         cuda.get_device(args.gpu).use()
@@ -68,9 +64,12 @@ def main():
 #    InputFile.reconSize = args.crop_width
     
     ## setup trainable links
-    encoder = Encoder(args)
     decoder = Decoder(args)
-    if args.dis_freq>0 or args.lambda_adv>0:
+    if args.use_enc:
+        encoder = Encoder(args)
+    else:
+        enc = L.Linear(1)
+    if args.use_dis:
         dis = Discriminator(args)
     else:
         dis = L.Linear(1)
@@ -87,10 +86,7 @@ def main():
     if args.latent_dim>0:
         init = xp.zeros((args.batchsize,args.latent_dim)).astype(np.float32)
     elif args.decoder_only:
-        c = args.gen_chs[-1]
-        h = args.crop_height//(2**(len(args.gen_chs)-1))
-        w = args.crop_width//(2**(len(args.gen_chs)-1))
-        init = xp.zeros((args.batchsize,c,h,w)).astype(np.float32)
+        init = xp.zeros((args.batchsize,decoder.latent_c,decoder.latent_h,decoder.latent_w)).astype(np.float32)
     else:
         init = xp.zeros((args.batchsize,1,args.crop_height,args.crop_width)).astype(np.float32)
 #    init = xp.random.uniform(-0.1,0.1,(1,1,args.crop_height,args.crop_width)).astype(np.float32)
@@ -98,9 +94,9 @@ def main():
     seed = L.Parameter(init)
 
     if args.gpu>=0:
-        encoder.to_gpu()
         decoder.to_gpu()
         seed.to_gpu()
+        encoder.to_gpu()
         dis.to_gpu()
 
     # setup optimisers
@@ -119,14 +115,14 @@ def main():
         return optimizer
 
     optimizer_sd = make_optimizer(seed, args.lr_sd, args.optimizer)
-    optimizer_enc = make_optimizer(encoder, args.lr_gen, args.optimizer)
     optimizer_dec = make_optimizer(decoder, args.lr_gen, args.optimizer)
+    optimizer_enc = make_optimizer(encoder, args.lr_gen, args.optimizer)
     optimizer_dis = make_optimizer(dis, args.lr_dis, args.optimizer_dis)
 
-    # load projection matrix and sinogram
-    if args.crop_height>256:
-        pool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
-        cp.cuda.set_allocator(pool.malloc)
+#  unify CPU and GPU memory to load big matrices
+#    if args.crop_height>256:
+#        pool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
+#        cp.cuda.set_allocator(pool.malloc)
 
     # projection matrices
     if args.lambda_sd > 0 or args.lambda_nn > 0:
@@ -149,7 +145,7 @@ def main():
     planct_iter = chainer.iterators.SerialIterator(planct_dataset, args.batchsize, shuffle=True)
     mvct_dataset = Dataset(
         path=args.mvct_dir, baseA=args.HU_base, rangeA=args.HU_range, crop=(args.crop_height,args.crop_width),
-        scale_to=args.scale_to, random=args.random_translate, imgtype='npy') 
+        scale_to=args.scale_to, random=args.random_translate) 
     mvct_iter = chainer.iterators.SerialIterator(mvct_dataset, args.batchsize, shuffle=True)
     data = prjData(args.sinogram)
     proj_iter = chainer.iterators.SerialIterator(data, args.batchsize, shuffle=False) # True
@@ -171,7 +167,7 @@ def main():
     log_interval = (50, 'iteration')
     log_keys_main = []
     log_keys_dis = []
-    log_keys_grad = ['main/grad_sd','main/grad_gen','main/grad_sd_consistency','main/grad_gen_consistency']
+    log_keys_grad = ['main/grad_sd','main/grad_gen','main/grad_sd_consistency','main/grad_gen_consistency','main/seed_diff']
     loss_main_list = [(args.lambda_sd,'main/loss_sd'),(args.lambda_nn,'main/loss_nn'),(args.lambda_ae1,'main/loss_ae1'),(args.lambda_ae2,'main/loss_ae2'),
                         (args.lambda_tv,'main/loss_tv'),(args.lambda_tvs,'main/loss_tvs'),(args.lambda_reg,'main/loss_reg'),(args.lambda_reg,'main/loss_reg_ae')]
     for a,k in loss_main_list:
@@ -200,26 +196,33 @@ def main():
     if args.snapinterval <= 0:
         args.snapinterval = total_iter
         
-    if args.dis_freq > 0:
+    if args.lambda_nn>0:
+        trainer.extend(extensions.dump_graph('main/loss_nn', out_name='gen.dot'))
+    elif args.lambda_ae1>0:
+        trainer.extend(extensions.dump_graph('main/loss_ae1', out_name='gen.dot'))
+
+    # save models
+    if args.use_enc:
+        trainer.extend(extensions.snapshot_object(
+            encoder, 'enc_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
+        trainer.extend(extensions.snapshot_object(
+            optimizer_enc, 'opt_enc_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
+    if args.use_dis:
         trainer.extend(extensions.snapshot_object(
             dis, 'dis_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
         trainer.extend(extensions.snapshot_object(
             optimizer_dis, 'opt_dis_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
 #        trainer.extend(extensions.dump_graph('main/loss_real', out_name='dis.dot'))
-
-    if args.lambda_nn>0:
-        trainer.extend(extensions.dump_graph('main/loss_nn', out_name='gen.dot'))
-
-    # save models
-    if not args.decoder_only:
-        trainer.extend(extensions.snapshot_object(
-            encoder, 'enc_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
-        trainer.extend(extensions.snapshot_object(
-            optimizer_enc, 'opt_enc_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
     trainer.extend(extensions.snapshot_object(
         decoder, 'dec_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
     trainer.extend(extensions.snapshot_object(
         optimizer_dec, 'opt_dec_{.updater.iteration}.npz'), trigger=(args.snapinterval, 'iteration'))
+
+    # save command line arguments
+    os.makedirs(args.out, exist_ok=True)
+    save_args(args,args.out)
+    with open(os.path.join(args.out,"args.txt"), 'w') as fh:
+        fh.write(" ".join(sys.argv))
 
     trainer.run()
                 

@@ -165,7 +165,8 @@ class ResBlock(chainer.Chain):
         h = self.activation(h)
         h = self.c1(h)
         h = self.norm1(h)
-        return h + self.cs(x)
+        h = h + self.cs(x)
+        return h
 
 
 class CBR(chainer.Chain):
@@ -214,19 +215,22 @@ class CBR(chainer.Chain):
 
     def __call__(self, x):
 #        print("*:",x.shape)
-        h = self.n1(self.c1(x))
-        if hasattr(self,'c2') and self.activation is not None:
-            h = self.activation(h)
+        h = self.c1(x)
+        h = self.n1(h)
+
         if hasattr(self,'d'):
             h = self.d(h)
         if hasattr(self,'c2'):
-            h = self.n2(self.c2(h))
+            if self.activation is not None:
+                h = self.activation(h)
+            h = self.c2(h)
+            h = self.n2(h)
         if self.dropout:
             h = F.dropout(h, ratio=self.dropout)
-        if self.activation is not None:
-            h = self.activation(h)
         if hasattr(self, 'skip'):
             h = h + self.skip(x)
+        if self.activation is not None:
+            h = self.activation(h)
         if hasattr(self, 'u'):
             h = self.u(h)
         return h
@@ -245,7 +249,6 @@ class LBR(chainer.Chain):
     def __call__(self, x):
         h = self.l0(x)
         h = self.norm(h)
-#        print(F.max(h))  # bug? we always get zero if a normalization is applied
         if self.dropout:
             h = F.dropout(h, ratio=self.dropout)
         if self.activation is not None:
@@ -299,6 +302,7 @@ class Encoder(chainer.Chain):
             else:
                 h.append(0)
 #            print(h[-1].data.shape)
+#        e = F.max_pooling_2d(e,2,2)
         for i in range(self.n_resblock):
             e = getattr(self, 'r' + str(i))(e)
         h.append(e)
@@ -311,6 +315,9 @@ class Decoder(chainer.Chain):
         super(Decoder, self).__init__()
         self.n_resblock = args.gen_nblock // 2 # half for Enc and half for Dec
         self.chs = args.gen_chs
+        self.latent_c = args.gen_chs[-1]
+        self.latent_h = args.crop_height//(2**(len(args.gen_chs)-1))
+        self.latent_w = args.crop_width//(2**(len(args.gen_chs)-1))
         if hasattr(args,'unet'):
             self.unet = args.unet
         else:
@@ -323,16 +330,15 @@ class Decoder(chainer.Chain):
             up_chs = self.chs
         with self.init_scope():
             if hasattr(args,'latent_dim') and args.latent_dim>0:
-                self.latent_c = args.gen_chs[-1]
-                self.latent_h = args.crop_height//(2**(len(args.gen_chs)-1))
-                self.latent_w = args.crop_width//(2**(len(args.gen_chs)-1))
                 print("Latent dimensions: ",self.latent_c,self.latent_h,self.latent_w)
-                self.latent_fc = LBR(self.latent_c*self.latent_h*self.latent_w, activation=args.gen_fc_activation)
+                self.latent_fc = L.Linear(None, self.latent_c*self.latent_h*self.latent_w)
+                self.latent_n = norm_layer[args.gen_norm](self.latent_c)
+                self.latent_ac = activation_func[args.gen_fc_activation]
             for i in range(self.n_resblock):
                 setattr(self, 'r' + str(i), ResBlock(self.chs[-1], norm=args.gen_norm, activation=args.gen_activation, equalised=args.eqconv, separable=args.spconv))
             for i in range(1,len(self.chs)):
                 setattr(self, 'ua' + str(i), CBR(up_chs[-i], self.chs[-i-1], ksize=args.gen_ksize, norm=args.gen_norm, sample=args.gen_up, activation=args.gen_activation, dropout=args.gen_dropout, equalised=args.eqconv, separable=args.spconv))
-            setattr(self, 'ua'+str(len(self.chs)),CBR(up_chs[0], up_chs[0], norm=args.gen_norm, sample='none', activation=args.gen_activation, equalised=args.eqconv, separable=args.spconv))
+            setattr(self, 'ua'+str(len(self.chs)),CBR(up_chs[0], up_chs[0], norm='none', sample='none', activation=args.gen_activation, equalised=args.eqconv, separable=args.spconv))
             setattr(self, 'ul',CBR(up_chs[0], args.ch, norm='none', sample=args.gen_sample, activation=args.gen_out_activation, equalised=args.eqconv, separable=args.spconv))
 
     def __call__(self, h):
@@ -342,8 +348,10 @@ class Decoder(chainer.Chain):
             e = h
         if hasattr(self,'latent_fc'):
             e = F.reshape(self.latent_fc(e),(-1,self.latent_c,self.latent_h,self.latent_w))
+            e = self.latent_ac(self.latent_n(e))
         for i in range(self.n_resblock):
             e = getattr(self, 'r' + str(i))(e)
+#        e = bilinear_upsampling(e)
         for i in range(1,len(self.chs)+1):
             if self.unet in ['conv','concat']:
                 e = getattr(self, 'ua' + str(i))(F.concat([e,h[-i-1]]))

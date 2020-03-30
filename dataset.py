@@ -72,7 +72,7 @@ class Dataset(dataset_mixin.DatasetMixin):
         else:
             ref_dicom = dicom.read_file(self.get_img_path(i), force=True)
     #        print(ref_dicom)
-            ref_dicom.file_meta.TransferSyntaxUID = dicom.uid.ImplicitVRLittleEndian
+    #        ref_dicom.file_meta.TransferSyntaxUID = dicom.uid.ImplicitVRLittleEndian
             img = ref_dicom.pixel_array+ref_dicom.RescaleIntercept
             img = self.img2var(img)
             img = img[np.newaxis,:,:]

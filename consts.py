@@ -20,7 +20,7 @@ optim = {
 }
 try:
     from eve import Eve
-    optim['Eve'] = functools.partial(Eve, beta1=0.5)
+    optim['Eve'] = functools.partial(Eve, beta1=0.1)
 except:
     pass
 try:
@@ -56,8 +56,8 @@ norm_layer = {
     'batch_aff': functools.partial(L.BatchNormalization, use_gamma=True, use_beta=True),
     'layer': L.LayerNormalization,
     'rbatch': functools.partial(L.BatchRenormalization, use_gamma=False, use_beta=True),
-#        functools.partial(L.GroupNormalization, 1)   ## currently very slow
-    'fnorm': feature_vector_normalization
+    'group': functools.partial(L.GroupNormalization, 1),   ## currently very slow
+    'fnorm': lambda x: feature_vector_normalization
 }
 try:
     from instance_normalization import InstanceNormalization
