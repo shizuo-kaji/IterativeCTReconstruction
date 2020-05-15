@@ -120,7 +120,7 @@ def arguments():
                         help='number of reconstructions')
     parser.add_argument('--iter', '-i', default=20000, type=int,
                         help='number of iterations for each reconstruction') 
-    parser.add_argument('--vis_freq', '-vf', default=2000, type=int,
+    parser.add_argument('--vis_freq', '-vf', default=1000, type=int,
                         help='image output interval')
     parser.add_argument('--save_dcm', '-dcm', action='store_true')
 
@@ -207,8 +207,6 @@ def arguments():
         args.skipdim=0
     if args.iter < args.vis_freq:
         args.vis_freq = args.iter
-    if args.lambda_sd>0 and args.lr_sd < 0.05:
-        print("\n\n for usual iterative reconstruction (-ls), --lr_sd should be around 0.1. \n\n")
     args.use_dis = (args.lambda_gan+args.lambda_adv+args.lambda_advs>0)
     args.use_enc = (not args.decoder_only)
     args.ch = 1

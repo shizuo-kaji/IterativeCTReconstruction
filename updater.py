@@ -44,7 +44,7 @@ class Updater(chainer.training.StandardUpdater):
 #                initializers.Uniform()(self.seed.W.array)
                 initializers.HeNormal()(self.seed.W.array)
             self.initial_seed = self.seed.W.array.copy()
-            print(xp.min(self.initial_seed),xp.max(self.initial_seed),xp.mean(self.initial_seed))
+#            print(xp.min(self.initial_seed),xp.max(self.initial_seed),xp.mean(self.initial_seed))
 
         ## for seed array
         arr = self.seed()
@@ -59,15 +59,19 @@ class Updater(chainer.training.StandardUpdater):
             loss_sd = 0
             for i in range(len(self.prImg)):
                 if self.rev[i]:
-                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i,:,::-1,::-1],(-1,1))))
+                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i,:,::-1,::-1],(-1,1)))) ##
                 else:
-                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i],(-1,1))))
+                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i],(-1,1)))) ##
                 loss_sd += F.mean_squared_error(rec_sd,self.prImg[i])
-                gd = F.sparse_matmul( rec_sd-self.prImg[i], self.conjMat, transa=True )
-                if self.rev[i]:
-                    self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]    # / logrep.shape[0] ?
-                else:
-                    self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array    # / logrep.shape[0] ?
+                if self.args.system_matrix:
+                    gd = F.sparse_matmul( self.conjMat, rec_sd-self.prImg[i], transa=True)
+                    if self.rev[i]:
+                        self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]    # / logrep.shape[0] ?
+                    else:
+                        self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array    # / logrep.shape[0] ?
+
+            if not self.args.system_matrix:
+                (self.args.lambda_sd *loss_sd).backward()
             chainer.report({'loss_sd': loss_sd/len(self.prImg)}, self.seed)
 
         if self.args.lambda_tvs > 0:
@@ -147,14 +151,17 @@ class Updater(chainer.training.StandardUpdater):
                 else:
                     rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn[i],(-1,1))))
                 loss_nn += F.mean_squared_error(rec_nn,self.prImg[i])
-                gd_nn = F.sparse_matmul( rec_nn-self.prImg[i], self.conjMat, transa=True )
-                if self.rev[i]:
-                    gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]
-                else:
-                    gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array
+                if self.args.system_matrix:
+                    gd_nn = F.sparse_matmul( rec_nn-self.prImg[i], self.conjMat, transa=True )
+                    if self.rev[i]:
+                        gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]
+                    else:
+                        gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array
             chainer.report({'loss_nn': loss_nn/len(self.prImg)}, self.seed)
-            gen.backward()
-#            loss_nn.backward()
+            if self.args.system_matrix:
+                gen.backward()
+            else:
+                (self.args.lambda_nn * loss_nn).backward()
 
             if not self.args.no_train_seed:
                 optimizer_sd.update()
@@ -169,7 +176,8 @@ class Updater(chainer.training.StandardUpdater):
                 chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.latent_fc.W.grad))}, self.seed)
             elif hasattr(self.decoder, 'ul'):
                 chainer.report({'grad_gen_consistency': F.average(F.absolute(self.decoder.ul.c1.c.W.grad))}, self.seed)
-            chainer.report({'seed_diff': F.mean_absolute_error(self.initial_seed,self.seed.W)/F.mean_absolute_error(self.initial_seed,xp.zeros_like(self.initial_seed))}, self.seed)
+
+        chainer.report({'seed_diff': F.mean_absolute_error(self.initial_seed,self.seed.W)/F.mean_absolute_error(self.initial_seed,xp.zeros_like(self.initial_seed))}, self.seed)
 
         # clip seed to [-1,1]
         if self.args.clip:

@@ -315,9 +315,10 @@ class Decoder(chainer.Chain):
         super(Decoder, self).__init__()
         self.n_resblock = args.gen_nblock // 2 # half for Enc and half for Dec
         self.chs = args.gen_chs
-        self.latent_c = args.gen_chs[-1]
-        self.latent_h = args.crop_height//(2**(len(args.gen_chs)-1))
-        self.latent_w = args.crop_width//(2**(len(args.gen_chs)-1))
+        if args.crop_height is not None:
+            self.latent_c = args.gen_chs[-1]
+            self.latent_h = args.crop_height//(2**(len(args.gen_chs)-1))
+            self.latent_w = args.crop_width//(2**(len(args.gen_chs)-1))
         if hasattr(args,'unet'):
             self.unet = args.unet
         else:

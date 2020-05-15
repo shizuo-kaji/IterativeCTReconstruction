@@ -68,7 +68,7 @@ def main():
     if args.use_enc:
         encoder = Encoder(args)
     else:
-        enc = L.Linear(1)
+        encoder = L.Linear(1)
     if args.use_dis:
         dis = Discriminator(args)
     else:
@@ -83,6 +83,8 @@ def main():
             print('encoder model loaded: {}'.format(args.model_gen))
         serializers.load_npz(args.model_gen.replace('enc','dec'), decoder) 
         print('decoder model loaded: {}'.format(args.model_gen.replace('enc','dec')))
+    if args.lambda_sd>0 and args.lr_sd < 0.05:
+        print("\n\n for usual iterative reconstruction (-ls), --lr_sd should be around 0.1. \n\n")
     if args.latent_dim>0:
         init = xp.zeros((args.batchsize,args.latent_dim)).astype(np.float32)
     elif args.decoder_only:
@@ -125,17 +127,24 @@ def main():
 #        cp.cuda.set_allocator(pool.malloc)
 
     # projection matrices
+    prMat, conjMat = None, None
     if args.lambda_sd > 0 or args.lambda_nn > 0:
-        prMat = scipy.sparse.load_npz(os.path.join(args.root,args.projection_matrix))  
+        prMat = scipy.sparse.load_npz(os.path.join(args.root,args.projection_matrix))
+#        cx = prMat.tocsr()
+#        rows,cols = cx.nonzero()
+#        for i,j in zip(rows,cols):
+#            if cx[i,j] < 1e-5:
+#                cx[i,j] = 0
+#        prMat = cx.tocoo()
+#        scipy.sparse.save_npz("d:/ml/reconst/pr.npz",prMat)
         prMat = sp.coo_matrix(prMat, dtype = np.float32)
         prMat = chainer.utils.CooMatrix(prMat.data, prMat.row, prMat.col, prMat.shape)
         print("Projection matrix {} shape {}".format(args.projection_matrix,prMat.shape,))
-        conjMat = scipy.sparse.load_npz(os.path.join(args.root,args.system_matrix))
-        conjMat = sp.coo_matrix(conjMat, dtype = np.float32)
-        conjMat = chainer.utils.CooMatrix(conjMat.data, conjMat.row, conjMat.col, conjMat.shape)
-        print("Conjugate matrix {} shape {}".format(args.system_matrix,conjMat.shape))
-    else:
-        prMat, conjMat = None, None
+        if args.system_matrix:
+            conjMat = scipy.sparse.load_npz(os.path.join(args.root,args.system_matrix))
+            conjMat = sp.coo_matrix(conjMat, dtype = np.float32)
+            conjMat = chainer.utils.CooMatrix(conjMat.data, conjMat.row, conjMat.col, conjMat.shape)
+            print("Conjugate matrix {} shape {}".format(args.system_matrix,conjMat.shape))
 
     # setup updater
     print("Setting up data iterators...")
