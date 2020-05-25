@@ -20,6 +20,12 @@ class Updater(chainer.training.StandardUpdater):
         self.n_reconst = 0
         super(Updater, self).__init__(*args, **kwargs)
 
+    def var2HU(self,arr):
+        return ((arr+1)/2 * self.args.HU_range)+self.args.HU_base  # [-1000=air,0=water,>1000=bone]
+    
+    def HU2raw(self,HU):
+        return HU * 0.0716 / 1024 + 0.0716
+
     def update_core(self):
         optimizer_sd = self.get_optimizer('main')
         optimizer_enc = self.get_optimizer('enc')
@@ -41,15 +47,15 @@ class Updater(chainer.training.StandardUpdater):
                 img = (2*(xp.clip(img,self.args.HU_base,self.args.HU_base+self.args.HU_range)-self.args.HU_base)/self.args.HU_range-1.0).astype(np.float32)
                 self.seed.W.array = xp.reshape(img,(1,1,self.args.crop_height,self.args.crop_width))
             else:
-#                initializers.Uniform()(self.seed.W.array)
+#                initializers.Uniform(scale=0.5)(self.seed.W.array)
                 initializers.HeNormal()(self.seed.W.array)
             self.initial_seed = self.seed.W.array.copy()
 #            print(xp.min(self.initial_seed),xp.max(self.initial_seed),xp.mean(self.initial_seed))
 
         ## for seed array
         arr = self.seed()
-        HU = ((arr+1)/2 * self.args.HU_range)+self.args.HU_base  # [-1000=air,0=water,>1000=bone]
-        raw = HU * 0.0716 / 1024 + 0.0716
+        HU = self.var2HU(arr)
+        raw = self.HU2raw(HU)
 
         self.seed.cleargrads()
         loss_seed = Variable(xp.array([0.0],dtype=np.float32))
@@ -62,7 +68,10 @@ class Updater(chainer.training.StandardUpdater):
                     rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i,:,::-1,::-1],(-1,1)))) ##
                 else:
                     rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i],(-1,1)))) ##
-                loss_sd += F.mean_squared_error(rec_sd,self.prImg[i])
+                if self.args.log:
+                    loss_sd += F.mean_squared_error(F.log(rec_sd),F.log(self.prImg[i]))
+                else:
+                    loss_sd += F.mean_squared_error(rec_sd,self.prImg[i])
                 if self.args.system_matrix:
                     gd = F.sparse_matmul( self.conjMat, rec_sd-self.prImg[i], transa=True)
                     if self.rev[i]:
@@ -142,8 +151,8 @@ class Updater(chainer.training.StandardUpdater):
             self.seed.cleargrads()
             gen.grad = xp.zeros_like(gen.array)
 
-            HU_nn = ((gen+1)/2 * self.args.HU_range)+self.args.HU_base  # [-1000=air,0=water,>1000=bone]
-            raw_nn = HU_nn * 0.0716 / 1024 + 0.0716
+            HU_nn = self.var2HU(gen)
+            raw_nn = self.HU2raw(HU_nn)
             loss_nn = 0
             for i in range(len(self.prImg)):
                 if self.rev[i]:
@@ -248,6 +257,6 @@ class Updater(chainer.training.StandardUpdater):
                     visimg = (np.clip(HU,b,b+r)-b)/r * 255.0
                     fn = 'n{:0>5}_iter{:0>6}_p{}_z{}_{}'.format(self.n_reconst,step+1,self.patient_id[i],self.slice[i],typ)
                     write_image(np.uint8(visimg),os.path.join(self.args.out,fn+'.jpg'))
-                    if (step+1)==self.args.iter or self.args.save_dcm:
+                    if (step+1)==self.args.iter or (not self.args.no_save_dcm):
                         #np.save(os.path.join(self.args.out,fn+'.npy'),HU[0])
                         write_dicom(os.path.join(self.args.out,fn+'.dcm'),HU[0])

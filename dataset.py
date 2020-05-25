@@ -89,10 +89,13 @@ class Dataset(dataset_mixin.DatasetMixin):
         return img
 
 def write_dicom(fn,new):
-    ref_dicom = dicom.dcmread("dummy.dcm", force=True)
+    # prepare template dcm for saving
+    dummy_file=os.path.join(os.path.dirname(os.path.abspath(__file__)),"dummy.dcm")
+    ref_dicom = dicom.dcmread(dummy_file, force=True)
     ref_dicom.file_meta.TransferSyntaxUID = dicom.uid.ExplicitVRLittleEndian #dicom.uid.ImplicitVRLittleEndian
     ref_dicom.is_little_endian = True
     ref_dicom.is_implicit_VR = False
+
 #    img = np.full(ref_dicom.pixel_array.shape, -1000, dtype=np.float32)
 #    ch,cw = img.shape
 #    h,w = new.shape

@@ -7,33 +7,81 @@ from datetime import datetime as dt
 
 def arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dp', action='store_true')
-    parser.add_argument('--batchsize', '-b', type=int, default=1)
     parser.add_argument('--gpu', '-g', type=int, default=0,
                         help='GPU IDs (currently, only single-GPU usage is supported')
     parser.add_argument('--out', '-o', default='result',
                         help='Directory to output the result')
-    parser.add_argument('--root', '-R', default='data',help='Root directory for data')
-    parser.add_argument('--planct_dir', '-Rp', default='',help='dir containing planCT images for discriminator')
-    parser.add_argument('--mvct_dir', '-Rm', default='',help='dir containing reconstructed MVCT images for discriminator')
-    parser.add_argument('--sinogram', '-Rs', default='', help='directory containing sinograms')
-    parser.add_argument('--argfile', '-a', help="specify args file to load settings from")
-    parser.add_argument('--projection_matrix', '-pm', default='projection_matrix_2d_256_1074mm.npz',
-                        #default='projection_matrix_2d_512_1074mm.npz',
-                        help='filename of the projection matrix')
-    parser.add_argument('--system_matrix', '-sm', default='systemMatrix_2d_256_1074mm.npz',
-                        #default='systemMatrix_2d_1-074mm.npz',
-                        help='filename of the system matrix')
+    parser.add_argument('--unified_memory_pool', '-mp', action='store_true',
+                        help='Use CPU memory to load big matrices into GPU')
 
-    parser.add_argument('--snapinterval', '-si', type=int, default=-1, 
-                        help='take snapshot every this reconstruction')
+    ## specify data file
+    parser.add_argument('--root', '-R', default='data', type=str, help='Root directory for data')
+    parser.add_argument('--planct_dir', '-Rp', default='', type=str, help='dir containing planCT images for discriminator')
+    parser.add_argument('--mvct_dir', '-Rm', default='', type=str, help='dir containing reconstructed MVCT images for discriminator')
+    parser.add_argument('--sinogram', '-Rs', default='', type=str, help='directory containing sinograms')
+    parser.add_argument('--projection_matrix', '-pm', type=str, default='projection_matrix_2d_256_1074mm.npz',
+                        help='filename of the projection matrix')
+    parser.add_argument('--system_matrix', '-sm', type=str, default='systemMatrix_2d_256_1074mm.npz',
+                        help='filename of the system matrix')
+    parser.add_argument('--argfile', '-a', type=str, help="specify args file to load settings from")
+    # initial models
+    parser.add_argument('--model_gen', '-mg', help='pretrained model file for generator')
+    parser.add_argument('--model_dis', '-md', help='pretrained model file for discriminator')
+    parser.add_argument('--model_image', '-mi', default="", help='initial seed image')
+
+    # dicom related
+    parser.add_argument('--HU_base', '-hub', type=int, default=-6000,     # -4500, 
+                        help='minimum HU value to be accounted for')
+    parser.add_argument('--HU_range', '-hur', type=int, default=9000,    # 6000,
+                        help='the maximum HU value to be accounted for will be HU_base+HU_range') #700
+    parser.add_argument('--HU_range_vis', '-hurv', default=2000, type=int,
+                        help='HU range in the visualization')
+    parser.add_argument('--crop_width', '-cw', type=int, default=512)
+    parser.add_argument('--crop_height', '-ch', type=int, default=None)
+    parser.add_argument('--scale_to', '-sc', type=int, default=-1)
+
+    # data augmentation
+    parser.add_argument('--random_translate', '-rt', type=int, default=4, help='random translation for planCT')
+    parser.add_argument('--noise_dis', '-nd', type=float, default=0,
+                        help='strength of noise injection for discriminator')
+    parser.add_argument('--noise_gen', '-ng', type=float, default=0,
+                        help='strength of noise injection for generator')
+
+    ## training stgrategy                        
+    parser.add_argument('--epoch', '-e', default=-1, type=int,
+                        help='number of reconstructions')
+    parser.add_argument('--iter', '-i', default=20000, type=int,
+                        help='number of iterations for each reconstruction') 
+    parser.add_argument('--batchsize', '-b', type=int, default=1)
     parser.add_argument('--weight_decay', '-wd', type=float, default=0,  #1e-7,
                         help='weight decay for regularization')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam_d',
                         help='select optimizer')
     parser.add_argument('--optimizer_dis', '-opd',choices=optim.keys(),default='Adam_d',
                         help='select optimizer')
+    parser.add_argument('--max_reconst_freq', '-mf', default=1, type=int,   # 40
+                        help='consistency loss will be considered one in every this number in the end')
+    parser.add_argument('--reconst_freq_decay_start', '-rfd', default=400, type=int,
+                        help='reconst_freq starts to increase towards max_reconst_freq after this number of iterations')
+    parser.add_argument('--dis_freq', '-df', default=1, type=int,
+                        help='discriminator update interval; set to negative to turn of discriminator')
+    parser.add_argument('--no_train_dec', '-ntd', action='store_true', help='not updating decoder during training')
+    parser.add_argument('--no_train_enc', '-nte', action='store_true', help='not updating encoder during training')
+    parser.add_argument('--no_train_seed', '-nts', action='store_true', help='not updating seed during training')
+    parser.add_argument('--decoder_only', '-d', action='store_true', help='not using encoder')
+    parser.add_argument('--clip', '-cl', action='store_true', help='clip the seed array to [-1,1] at every iteration')
+    # learning rate
+    parser.add_argument('--lr_sd', '-lrs', default=1e-2, type=float,   # 1e-2 for conjugate (Adam)
+                        help='learning rate for seed array')
+    parser.add_argument('--lr_gen', '-lrg', default=1e-4, type=float, # 1e-2
+                        help='learning rate for generator NN')
+    parser.add_argument('--lr_dis', '-lrd', default=1e-4, type=float,
+                        help='learning rate for discriminator NN')
+    parser.add_argument('--lr_drop', '-lrp', default=1, type=int,
+                        help='learning rate decay')
 
+    ## structure of neural network 
+    parser.add_argument('--dp', action='store_true', help='Use an alternative network structure')
     parser.add_argument('--dtype', '-dt', choices=dtypes.keys(), default='fp32',
                         help='floating point precision')
     parser.add_argument('--eqconv', '-eq', action='store_true',
@@ -42,13 +90,6 @@ def arguments():
                         help='Enable Separable Convolution')
     parser.add_argument('--senet', '-se', action='store_true',
                         help='Enable Squeeze-and-Excitation mechanism')
-
-    # data augmentation
-    parser.add_argument('--random_translate', '-rt', type=int, default=4, help='random translation for planCT')
-    parser.add_argument('--noise_dis', '-nd', type=float, default=0,
-                        help='strength of noise injection for discriminator')
-    parser.add_argument('--noise_gen', '-ng', type=float, default=0,
-                        help='strength of noise injection for generator')
 
     # discriminator
     parser.add_argument('--dis_activation', '-da', default='lrelu', choices=activation_func.keys())
@@ -114,37 +155,9 @@ def arguments():
                         help='smoothing parameter for total variation')
     parser.add_argument('--tv_method', '-tm', default='usual', choices=['abs','sobel','usual'],
                         help='method of calculating total variation')
+    parser.add_argument('--log', action='store_true', help='Do not take exponential (consider reconstruction loss in the image domain rather than in the projection domain)')
 
-    ##
-    parser.add_argument('--epoch', '-e', default=-1, type=int,
-                        help='number of reconstructions')
-    parser.add_argument('--iter', '-i', default=20000, type=int,
-                        help='number of iterations for each reconstruction') 
-    parser.add_argument('--vis_freq', '-vf', default=1000, type=int,
-                        help='image output interval')
-    parser.add_argument('--save_dcm', '-dcm', action='store_true')
-
-    parser.add_argument('--max_reconst_freq', '-mf', default=1, type=int,   # 40
-                        help='consistency loss will be considered one in every this number in the end')
-    parser.add_argument('--reconst_freq_decay_start', '-rfd', default=400, type=int,
-                        help='reconst_freq starts to increase towards max_reconst_freq after this number of iterations')
-    parser.add_argument('--dis_freq', '-df', default=1, type=int,
-                        help='discriminator update interval; set to negative to turn of discriminator')
-
-    parser.add_argument('--lr_sd', '-lrs', default=1e-4, type=float,   # 1e-2 for exp, 0.5 for log, 1e-1 for conjugate
-                        help='learning rate for seed array')
-    parser.add_argument('--lr_gen', '-lrg', default=1e-4, type=float, # 1e-2
-                        help='learning rate for generator NN')
-    parser.add_argument('--lr_dis', '-lrd', default=1e-4, type=float,
-                        help='learning rate for discriminator NN')
-    parser.add_argument('--lr_drop', '-lrp', default=1, type=int,
-                        help='learning rate decay')
-    parser.add_argument('--no_train_dec', '-ntd', action='store_true', help='not updating decoder during training')
-    parser.add_argument('--no_train_enc', '-nte', action='store_true', help='not updating encoder during training')
-    parser.add_argument('--no_train_seed', '-nts', action='store_true', help='not updating seed during training')
-    parser.add_argument('--decoder_only', '-d', action='store_true', help='not using encoder')
-    parser.add_argument('--clip', '-cl', action='store_true')
-
+    # weights
     parser.add_argument('--lambda_tv', '-ltv', default=0, type=float,   # 2e+2 for 256x256, 5e+2 is strong
                         help='weight of total variation regularization for generator')
     parser.add_argument('--lambda_tvs', '-ltvs', default=0, type=float,   # 
@@ -157,7 +170,7 @@ def arguments():
                         help='weight of random fake generation loss for generator')
     parser.add_argument('--lambda_sd', '-ls', default=0, type=float,
                         help='weight of reconstruction consistency loss for seed array')
-    parser.add_argument('--lambda_nn', '-ln', default=1.0, type=float, 
+    parser.add_argument('--lambda_nn', '-ln', default=0.0, type=float, 
                         help='weight of reconstruction consistency loss for CNN')
     parser.add_argument('--lambda_ae1', '-lae1', default=0.0, type=float, 
                         help='autoencoder L1 loss for generator')
@@ -166,20 +179,12 @@ def arguments():
     parser.add_argument('--lambda_reg', '-lreg', type=float, default=0,
                         help='weight for regularisation for generator')
 
-    parser.add_argument('--model_gen', '-mg', help='pretrained model file for generator')
-    parser.add_argument('--model_dis', '-md', help='pretrained model file for discriminator')
-    parser.add_argument('--model_image', '-mi', default="", help='initial seed image')
-    parser.add_argument('--crop_width', '-cw', type=int, default=256) 
-    parser.add_argument('--crop_height', '-ch', type=int, default=None)
-    parser.add_argument('--scale_to', '-sc', type=int, default=-1)
-
-    ## dicom related
-    parser.add_argument('--HU_base', '-hub', type=int, default=-6000,     # -4500, 
-                        help='minimum HU value to be accounted for')
-    parser.add_argument('--HU_range', '-hur', type=int, default=9000,    # 6000,
-                        help='the maximum HU value to be accounted for will be HU_base+HU_range') #700
-    parser.add_argument('--HU_range_vis', '-hurv', default=2000, type=int,
-                        help='HU range in the visualization')
+    ## save and report
+    parser.add_argument('--vis_freq', '-vf', default=1000, type=int,
+                        help='image output interval')
+    parser.add_argument('--no_save_dcm', '-nodcm', action='store_true')
+    parser.add_argument('--snapinterval', '-si', type=int, default=-1, 
+                        help='take snapshot every this reconstruction')
 
     args = parser.parse_args()
 

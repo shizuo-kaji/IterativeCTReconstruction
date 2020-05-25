@@ -122,9 +122,9 @@ def main():
     optimizer_dis = make_optimizer(dis, args.lr_dis, args.optimizer_dis)
 
 #  unify CPU and GPU memory to load big matrices
-#    if args.crop_height>256:
-#        pool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
-#        cp.cuda.set_allocator(pool.malloc)
+    if args.unified_memory_pool and args.crop_height>256:
+        pool = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
+        cp.cuda.set_allocator(pool.malloc)
 
     # projection matrices
     prMat, conjMat = None, None
