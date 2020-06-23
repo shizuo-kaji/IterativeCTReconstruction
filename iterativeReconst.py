@@ -126,7 +126,7 @@ def main():
         cp.cuda.set_allocator(pool.malloc)
 
     # projection matrices
-    prMat, conjMat = None, None
+    prMats, conjMats = None, None
     if args.lambda_sd > 0 or args.lambda_nn > 0:
         prMat = scipy.sparse.load_npz(os.path.join(args.root,args.projection_matrix)).tocsr(copy=False)
 #        cx = prMat.tocsr()

@@ -30,7 +30,8 @@ class prjData(dataset_mixin.DatasetMixin):
 
     def get_example(self, i):
         img = np.load(self.ids[i])
-        imgs = np.stack([(img.reshape(self.W,self.H)[i::self.osem,:]).reshape(-1,1) for i in range(self.osem)])
+        imgs = np.stack([img[i::self.osem] for i in range(self.osem)])
+#        imgs = np.stack([(img.reshape(self.W,self.H)[i::self.osem,:]).reshape(-1,1) for i in range(self.osem)])
         return imgs, self.rev[i], self.patient_id[i], self.slice[i]
 
 ## load images everytime from disk: slower but low memory usage
