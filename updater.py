@@ -13,9 +13,9 @@ class Updater(chainer.training.StandardUpdater):
     def __init__(self, *args, **kwargs):
         self.seed, self.encoder, self.decoder, self.dis = kwargs.pop('models')
         params = kwargs.pop('params')
-        self.args = params['args']
-        self.prMat = params['prMat']   ## projection matrix
-        self.conjMat = params['conjMat']   ## system matrix
+        self.args = params['args'] 
+        self.prMats = params['prMats']   ## array of projection matrices
+        self.conjMats = params['conjMats']   ## array of system matrices: TODO
         self._buffer = losses.ImagePool(200)
         self.n_reconst = 0
         super(Updater, self).__init__(*args, **kwargs)
@@ -34,9 +34,11 @@ class Updater(chainer.training.StandardUpdater):
         xp = self.seed.xp
 
         step = self.iteration % self.args.iter
+        osem_step = step % self.args.osem
         if step == 0:
             batch = self.get_iterator('main').next()
             self.prImg, self.rev, self.patient_id, self.slice = self.converter(batch, self.device)
+            print(self.prImg.shape)
             self.n_reconst += 1
             self.recon_freq = 1
             if ".npy" in self.args.model_image:
@@ -65,15 +67,15 @@ class Updater(chainer.training.StandardUpdater):
             loss_sd = 0
             for i in range(len(self.prImg)):
                 if self.rev[i]:
-                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i,:,::-1,::-1],(-1,1)))) ##
+                    rec_sd = F.exp(-F.sparse_matmul(self.prMats[osem_step],F.reshape(raw[i,:,::-1,::-1],(-1,1)))) ##
                 else:
-                    rec_sd = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw[i],(-1,1)))) ##
+                    rec_sd = F.exp(-F.sparse_matmul(self.prMats[osem_step],F.reshape(raw[i],(-1,1)))) ##
                 if self.args.log:
-                    loss_sd += F.mean_squared_error(F.log(rec_sd),F.log(self.prImg[i]))
+                    loss_sd += F.mean_squared_error(F.log(rec_sd),F.log(self.prImg[i][osem_step]))
                 else:
-                    loss_sd += F.mean_squared_error(rec_sd,self.prImg[i])
+                    loss_sd += F.mean_squared_error(rec_sd,self.prImg[i][osem_step])
                 if self.args.system_matrix:
-                    gd = F.sparse_matmul( self.conjMat, rec_sd-self.prImg[i], transa=True)
+                    gd = F.sparse_matmul( self.conjMats[osem_step], rec_sd-self.prImg[i][osem_step], transa=True)
                     if self.rev[i]:
                         self.seed.W.grad[i] -= self.args.lambda_sd * F.reshape(gd, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]    # / logrep.shape[0] ?
                     else:
@@ -156,12 +158,12 @@ class Updater(chainer.training.StandardUpdater):
             loss_nn = 0
             for i in range(len(self.prImg)):
                 if self.rev[i]:
-                    rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn[i,:,::-1,::-1],(-1,1))))
+                    rec_nn = F.exp(-F.sparse_matmul(self.prMats[osem_step],F.reshape(raw_nn[i,:,::-1,::-1],(-1,1))))
                 else:
-                    rec_nn = F.exp(-F.sparse_matmul(self.prMat,F.reshape(raw_nn[i],(-1,1))))
-                loss_nn += F.mean_squared_error(rec_nn,self.prImg[i])
+                    rec_nn = F.exp(-F.sparse_matmul(self.prMats[osem_step],F.reshape(raw_nn[i],(-1,1))))
+                loss_nn += F.mean_squared_error(rec_nn,self.prImg[i][osem_step])
                 if self.args.system_matrix:
-                    gd_nn = F.sparse_matmul( rec_nn-self.prImg[i], self.conjMat, transa=True )
+                    gd_nn = F.sparse_matmul( rec_nn-self.prImg[i][osem_step], self.conjMats[osem_step], transa=True )
                     if self.rev[i]:
                         gen.grad[i] -= self.args.lambda_nn * F.reshape(gd_nn, (1,self.args.crop_height,self.args.crop_width)).array[:,::-1,::-1]
                     else:

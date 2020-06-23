@@ -24,7 +24,6 @@ from chainerui.utils import save_args
 import cupy as cp
 
 from dataset import Dataset,prjData 
-
 from net import Discriminator
 import losses
 from arguments import arguments
@@ -129,7 +128,7 @@ def main():
     # projection matrices
     prMat, conjMat = None, None
     if args.lambda_sd > 0 or args.lambda_nn > 0:
-        prMat = scipy.sparse.load_npz(os.path.join(args.root,args.projection_matrix))
+        prMat = scipy.sparse.load_npz(os.path.join(args.root,args.projection_matrix)).tocsr(copy=False)
 #        cx = prMat.tocsr()
 #        rows,cols = cx.nonzero()
 #        for i,j in zip(rows,cols):
@@ -137,14 +136,16 @@ def main():
 #                cx[i,j] = 0
 #        prMat = cx.tocoo()
 #        scipy.sparse.save_npz("d:/ml/reconst/pr.npz",prMat)
-        prMat = sp.coo_matrix(prMat, dtype = np.float32)
-        prMat = chainer.utils.CooMatrix(prMat.data, prMat.row, prMat.col, prMat.shape)
-        print("Projection matrix {} shape {}".format(args.projection_matrix,prMat.shape,))
+        prMats = [ sp.coo_matrix( (prMat[np.arange(i,prMat.shape[0],args.osem),:]),dtype = np.float32) for i in range(args.osem)]
+        prMats = [ chainer.utils.CooMatrix(p.data, p.row, p.col, p.shape) for p in prMats ]
+        print("Projection matrix {} shape {}, thinned {} x {}".format(args.projection_matrix,prMat.shape,prMats[0].shape,len(prMats)))
         if args.system_matrix:
-            conjMat = scipy.sparse.load_npz(os.path.join(args.root,args.system_matrix))
-            conjMat = sp.coo_matrix(conjMat, dtype = np.float32)
-            conjMat = chainer.utils.CooMatrix(conjMat.data, conjMat.row, conjMat.col, conjMat.shape)
-            print("Conjugate matrix {} shape {}".format(args.system_matrix,conjMat.shape))
+            conjMat = scipy.sparse.load_npz(os.path.join(args.root,args.system_matrix)).tocsr(copy=False)
+            conjMats = [ sp.coo_matrix( (conjMat[np.arange(i,conjMat.shape[0],args.osem),:]),dtype = np.float32) for i in range(args.osem)]
+            conjMats = [ chainer.utils.CooMatrix(p.data, p.row, p.col, p.shape) for p in conjMats ]
+#            conjMat = sp.coo_matrix(conjMat, dtype = np.float32)
+#            conjMat = chainer.utils.CooMatrix(conjMat.data, conjMat.row, conjMat.col, conjMat.shape)
+            print("Conjugate matrix {} shape {},  thinned {} x {}".format(args.system_matrix,conjMat.shape,conjMats[0].shape,len(conjMats)))
 
     # setup updater
     print("Setting up data iterators...")
@@ -156,7 +157,7 @@ def main():
         path=args.mvct_dir, baseA=args.HU_base, rangeA=args.HU_range, crop=(args.crop_height,args.crop_width),
         scale_to=args.scale_to, random=args.random_translate) 
     mvct_iter = chainer.iterators.SerialIterator(mvct_dataset, args.batchsize, shuffle=True)
-    data = prjData(args.sinogram)
+    data = prjData(args.sinogram,osem=args.osem)
     proj_iter = chainer.iterators.SerialIterator(data, args.batchsize, shuffle=False) # True
 
     updater = Updater(
@@ -164,7 +165,7 @@ def main():
         iterator={'main':proj_iter, 'planct':planct_iter, 'mvct':mvct_iter},
         optimizer={'main': optimizer_sd, 'enc': optimizer_enc, 'dec': optimizer_dec, 'dis': optimizer_dis},
         device=args.gpu,
-        params={'args': args, 'prMat':prMat, 'conjMat':conjMat}
+        params={'args': args, 'prMats':prMats, 'conjMats':conjMats}
         )
 
     # logging

@@ -19,7 +19,7 @@ def arguments():
     parser.add_argument('--planct_dir', '-Rp', default='', type=str, help='dir containing planCT images for discriminator')
     parser.add_argument('--mvct_dir', '-Rm', default='', type=str, help='dir containing reconstructed MVCT images for discriminator')
     parser.add_argument('--sinogram', '-Rs', default='', type=str, help='directory containing sinograms')
-    parser.add_argument('--projection_matrix', '-pm', type=str, default='projection_matrix_2d_256_1074mm.npz',
+    parser.add_argument('--projection_matrix', '-pm', type=str, default='projection_matrix_2d_512_1-074mm_Nr100_equalWeights_ver4-4.npz',
                         help='filename of the projection matrix')
     parser.add_argument('--system_matrix', '-sm', type=str, default='systemMatrix_2d_256_1074mm.npz',
                         help='filename of the system matrix')
@@ -28,6 +28,9 @@ def arguments():
     parser.add_argument('--model_gen', '-mg', help='pretrained model file for generator')
     parser.add_argument('--model_dis', '-md', help='pretrained model file for discriminator')
     parser.add_argument('--model_image', '-mi', default="", help='initial seed image')
+
+    # OSEM added by S.O. in 2020/06/16
+    parser.add_argument('--osem', '-os', type=int, default=1, help='number of thinning out for OSEM')
 
     # dicom related
     parser.add_argument('--HU_base', '-hub', type=int, default=-6000,     # -4500, 
@@ -155,7 +158,7 @@ def arguments():
                         help='smoothing parameter for total variation')
     parser.add_argument('--tv_method', '-tm', default='usual', choices=['abs','sobel','usual'],
                         help='method of calculating total variation')
-    parser.add_argument('--log', action='store_true', help='Do not take exponential (consider reconstruction loss in the image domain rather than in the projection domain)')
+    parser.add_argument('--log', default=True, help='Do not take exponential (consider reconstruction loss in the image domain rather than in the projection domain)')
 
     # weights
     parser.add_argument('--lambda_tv', '-ltv', default=0, type=float,   # 2e+2 for 256x256, 5e+2 is strong

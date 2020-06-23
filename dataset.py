@@ -8,11 +8,14 @@ import numpy as np
 from chainercv.transforms import random_crop,center_crop,resize
 
 class prjData(dataset_mixin.DatasetMixin):
-    def __init__(self, path):
+    def __init__(self, path, osem=1):
         self.ids = []
         self.rev = []
         self.patient_id = []
         self.slice = []
+        self.osem = osem
+        self.W = 800 # size of the projection image
+        self.H = 528
         print("Load sinograms from: {}".format(path))
         for fn in glob.glob(os.path.join(path,"**/*.npy"), recursive=True):
             self.ids.append(fn)
@@ -26,7 +29,9 @@ class prjData(dataset_mixin.DatasetMixin):
         return len(self.ids)
 
     def get_example(self, i):
-        return np.load(self.ids[i]), self.rev[i], self.patient_id[i], self.slice[i]
+        img = np.load(self.ids[i])
+        imgs = np.stack([(img.reshape(self.W,self.H)[i::self.osem,:]).reshape(-1,1) for i in range(self.osem)])
+        return imgs, self.rev[i], self.patient_id[i], self.slice[i]
 
 ## load images everytime from disk: slower but low memory usage
 class Dataset(dataset_mixin.DatasetMixin):
